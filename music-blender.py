@@ -111,6 +111,25 @@ def check_tags(folder):
 		if title == "":
 			tag_errors.append("{0}: Track artist is missing".format(filename))
 
+	# check all tracks have (correct and matching) album artists
+	album_artist_ok = True
+	album_artist_last = None
+	for filename, track in sorted(tracks.items()):
+		if not 'ALBUMARTIST' in track.tags:
+			album_artist_ok = False
+		else:
+			if track.tags['ALBUMARTIST'][0] != re.sub(' +', ' ', track.tags['ALBUMARTIST'][0].strip()):
+				tag_errors.append("{0}: Album artist has leading/trailing/multiple spaces".format(filename))
+
+			if not album_artist_last:
+				album_artist_last = track.tags['ALBUMARTIST'][0]
+			else:
+				if track.tags['ALBUMARTIST'][0] != album_artist_last:
+					album_artist_ok = False
+
+	if not album_artist_ok:
+		tag_errors.append("Folder has missing/non-matching album artist tags")
+
 
 
 	return tag_errors
