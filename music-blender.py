@@ -10,6 +10,13 @@ allowed_extensions = [".mp3", ".flac", ".jpg", ".jpeg", ".log"]
 def clean_text(text):
 	return re.sub(' +', ' ', text.strip())
 
+def write_tag(track, tag, value):
+	track.tags[tag] = value
+	retval = track.save()
+	if len(retval) != 0:
+		print("Could not alter track tag: {0}".format(track))
+		exit()
+
 # return true if folder contains any subfolders
 def check_subfolders(folder):
 	items = os.listdir(folder)
@@ -76,20 +83,25 @@ def check_tags(folder):
 		tag_errors.append("Directory does not have a full set of tracks: {0}".format(flattened_track_nums))
 
 	# check the track number-of field
-	for filename, track in sorted(tracks.items()):
-		# skip this check if there are no track numbers at all
-		if not 'TRACKNUMBER' in track.tags:
-			continue
+	if all_tracks_present:
+		for filename, track in sorted(tracks.items()):
+			# skip this check if there are no track numbers at all
+			if not 'TRACKNUMBER' in track.tags:
+				continue
 
-		track_num_split = track.tags['TRACKNUMBER'][0].split("/")
-		if len(track_num_split) is 1:
-			if all_tracks_present:
-				tag_errors.append("{0}: track number-of missing, should be {1}".format(filename, track_numbers[-1]))
-			else:
-				tag_errors.append("{0}: track number-of missing".format(filename))
-			continue
-		if int(track_num_split[1]) != track_numbers[-1]:
-			tag_errors.append("{0}: track number-of incorrect: {1} should be {2}".format(filename, track_num_split[1], track_numbers[-1]))
+			track_num_split = track.tags['TRACKNUMBER'][0].split("/")
+			if len(track_num_split) is 1:
+				if all_tracks_present:
+					if fix_track_number_of:
+						new_tracknumber = str("{0}/{1}".format(track_num_split[0], track_numbers[-1]))
+						write_tag(track, 'TRACKNUMBER', [new_tracknumber])
+					else:
+						tag_errors.append("{0}: track number-of missing, should be {1}".format(filename, track_numbers[-1]))
+				else:
+					tag_errors.append("{0}: track number-of missing".format(filename))
+				continue
+			if int(track_num_split[1]) != track_numbers[-1]:
+				tag_errors.append("{0}: track number-of incorrect: {1} should be {2}".format(filename, track_num_split[1], track_numbers[-1]))
 
 	# check all tracks have (correct) titles
 	for filename, track in sorted(tracks.items()):
@@ -98,7 +110,10 @@ def check_tags(folder):
 			continue
 
 		if track.tags['TITLE'][0] != clean_text(track.tags['TITLE'][0]):
-			tag_errors.append("{0}: Track title has leading/trailing/multiple spaces".format(filename))
+			if clean_text_tags:
+				write_tag(track, 'TITLE', [clean_text(track.tags['TITLE'][0])])
+			else:
+				tag_errors.append("{0}: Track title has leading/trailing/multiple spaces".format(filename))
 		if clean_text(track.tags['TITLE'][0]) == "":
 			tag_errors.append("{0}: Track title is missing".format(filename))
 
@@ -116,7 +131,10 @@ def check_tags(folder):
 		title = clean_text(track.tags['ARTIST'][0])
 
 		if track.tags['ARTIST'][0] != clean_text(track.tags['ARTIST'][0]):
-			tag_errors.append("{0}: Track artist has leading/trailing/multiple spaces".format(filename))
+			if clean_text_tags:
+				write_tag(track, 'ARTIST', [clean_text(track.tags['ARTIST'][0])])
+			else:
+				tag_errors.append("{0}: Track artist has leading/trailing/multiple spaces".format(filename))
 		if title == "":
 			tag_errors.append("{0}: Track artist is missing".format(filename))
 
@@ -128,7 +146,10 @@ def check_tags(folder):
 			album_artist_ok = False
 		else:
 			if track.tags['ALBUMARTIST'][0] != clean_text(track.tags['ALBUMARTIST'][0]):
-				tag_errors.append("{0}: Album artist has leading/trailing/multiple spaces".format(filename))
+				if clean_text_tags:
+					write_tag(track, 'ALBUMARTIST', [clean_text(track.tags['ALBUMARTIST'][0])])
+				else:
+					tag_errors.append("{0}: Album artist has leading/trailing/multiple spaces".format(filename))
 
 			if not album_artist_last:
 				album_artist_last = track.tags['ALBUMARTIST'][0]
@@ -223,6 +244,10 @@ parser.add_argument('--dest', metavar='destination', type=str,
                    help='Leave original files untouched, create fixed versions in this directory')
 parser.add_argument('--delete-disallowed-files', action='store_true',
                    help='Delete superfluous files in album base directories')
+parser.add_argument('--fix-track-number-of', action='store_true',
+                   help='Attempt to fix missing track number of tags')
+parser.add_argument('--clean-text-tags', action='store_true',
+                   help='Clean up leading/trailing/multiple whitespace')
 
 
 
@@ -232,6 +257,8 @@ source = args.source
 destination = args.dest
 operation_mode = args.mode
 delete_disallowed_files = args.delete_disallowed_files
+fix_track_number_of = args.fix_track_number_of
+clean_text_tags = args.clean_text_tags
 
 if not os.path.isdir(source):
 	print("Source folder {0} does not exist".format(source))
@@ -278,4 +305,5 @@ for curr in folders:
 
 # discnum_of
 # encoding
-# folder
+# subfolder CD1/2
+# split into functions
