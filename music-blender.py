@@ -48,20 +48,9 @@ def check_disallowed_files(folder):
 				disallowed_files.append(i)
 	return disallowed_files
 
-def check_tags(folder):
-	items = os.listdir(folder)
+# check we have a full set of strictly incrementing tracks, starting at 1
+def check_track_numbers(tracks, tag_errors):
 
-	tag_errors = []
-
-	tracks = {}
-
-	for i in items:
-		if os.path.isdir(os.path.join(folder, i)):
-			continue
-
-		if os.path.splitext(i)[-1].lower() == ".mp3":
-			tracks[i] = taglib.File(os.path.join(folder, i))
-	
 	# check track numbers
 	track_numbers = []
 	for filename, track in sorted(tracks.items()):
@@ -82,28 +71,36 @@ def check_tags(folder):
 		flattened_track_nums = ",".join(str(i) for i in track_numbers)
 		tag_errors.append("Directory does not have a full set of tracks: {0}".format(flattened_track_nums))
 
-	# check the track number-of field
-	if all_tracks_present:
-		for filename, track in sorted(tracks.items()):
-			# skip this check if there are no track numbers at all
-			if not 'TRACKNUMBER' in track.tags:
-				continue
 
-			track_num_split = track.tags['TRACKNUMBER'][0].split("/")
-			if len(track_num_split) is 1:
-				if all_tracks_present:
-					if fix_track_number_of:
-						new_tracknumber = str("{0}/{1}".format(track_num_split[0], track_numbers[-1]))
-						write_tag(track, 'TRACKNUMBER', [new_tracknumber])
-					else:
-						tag_errors.append("{0}: track number-of missing, should be {1}".format(filename, track_numbers[-1]))
+# check the track number-of field
+def check_track_number_of(tracks, tag_errors, all_tracks_present):
+		
+	if not all_tracks_present:
+		return
+
+	for filename, track in sorted(tracks.items()):
+		# skip this check if there are no track numbers at all
+		if not 'TRACKNUMBER' in track.tags:
+			continue
+
+		track_num_split = track.tags['TRACKNUMBER'][0].split("/")
+		if len(track_num_split) is 1:
+			if all_tracks_present:
+				if fix_track_number_of:
+					new_tracknumber = str("{0}/{1}".format(track_num_split[0], track_numbers[-1]))
+					write_tag(track, 'TRACKNUMBER', [new_tracknumber])
 				else:
-					tag_errors.append("{0}: track number-of missing".format(filename))
-				continue
-			if int(track_num_split[1]) != track_numbers[-1]:
-				tag_errors.append("{0}: track number-of incorrect: {1} should be {2}".format(filename, track_num_split[1], track_numbers[-1]))
+					tag_errors.append("{0}: track number-of missing, should be {1}".format(filename, track_numbers[-1]))
+			else:
+				tag_errors.append("{0}: track number-of missing".format(filename))
+			continue
+		if int(track_num_split[1]) != track_numbers[-1]:
+			tag_errors.append("{0}: track number-of incorrect: {1} should be {2}".format(filename, track_num_split[1], track_numbers[-1]))
 
-	# check all tracks have (correct) titles
+	return all_tracks_present
+
+# check all tracks have (correct) titles
+def check_track_titles(tracks, tag_errors):
 	for filename, track in sorted(tracks.items()):
 		if not 'TITLE' in track.tags:
 			tag_errors.append("{0}: Track title missing".format(filename))
@@ -117,7 +114,8 @@ def check_tags(folder):
 		if clean_text(track.tags['TITLE'][0]) == "":
 			tag_errors.append("{0}: Track title is missing".format(filename))
 
-	# check all tracks have (correct) artists
+# check all tracks have (correct) artists
+def check_artists(tracks, tag_errors):
 	for filename, track in sorted(tracks.items()):
 		if not 'ARTIST' in track.tags:
 			tag_errors.append("{0}: Track artist missing".format(filename))
@@ -138,10 +136,15 @@ def check_tags(folder):
 		if title == "":
 			tag_errors.append("{0}: Track artist is missing".format(filename))
 
-	# check all tracks have (correct and matching) album artists
+# check all tracks have (correct) album artist tags
+def check_album_artists(tracks, tag_errors):
 	album_artist_ok = True
 	album_artist_last = None
+	artists = []
 	for filename, track in sorted(tracks.items()):
+		if 'ARTIST' in track.tags:
+			artists.append(track.tags['ARTIST'][0])
+
 		if not 'ALBUMARTIST' in track.tags:
 			album_artist_ok = False
 		else:
@@ -158,11 +161,30 @@ def check_tags(folder):
 					album_artist_ok = False
 
 	if not album_artist_ok:
-		tag_errors.append("Folder has missing/non-matching album artist tags")
+		# check that we have an artist at all, that all artist tags in album match, and that the match isn't blank
+		if fix_album_artist and len(artists) > 0 and artists[1:] == artists[:-1] and clean_text(artists[0]) != "":
+			write_tag(track, 'ALBUMARTIST', [clean_text(artists[0])])
+		else:
+			tag_errors.append("Folder has missing/non-matching album artist tags")
 
-	# check all tracks have (correct and matching) year tags
+# check all tracks have (correct and matching) year tags
+def check_years(tracks, tag_errors, folder):
+
+	# look for a year in the folder name
+	year_folder = re.search('[\^\$(\- ]\d{4}[)\^\$\- ]', folder.split(os.path.sep)[-1])
+	if year_folder:
+		year_folder = re.search('\d{4}', year_folder.group(0)).group(0)
+
 	year_ok = True
-	year_last = None
+	year_last = None	
+	year_any = None
+
+	# find *any* track containing a year
+	for filename, track in sorted(tracks.items()):
+		if 'DATE' in track.tags:
+			year_any = track.tags['DATE'][0]
+
+
 	for filename, track in sorted(tracks.items()):
 		if not 'DATE' in track.tags:
 			year_ok = False
@@ -173,10 +195,21 @@ def check_tags(folder):
 				if track.tags['DATE'][0] != year_last:
 					year_ok = False
 
-	if not year_ok:
-		tag_errors.append("Folder has missing/non-matching year tags")
 
-	# check all tracks have (correct and matching) album titles
+
+	if not year_ok:
+		# if we are in fix-mode, re-iterate and apply the year to all tracks
+		if fix_year and (year_any or year_folder):
+			for filename, track in sorted(tracks.items()):
+				if year_any:
+					write_tag(track, 'DATE', [year_any])
+				if year_folder:
+					write_tag(track, 'DATE', [year_folder])
+		else:
+			tag_errors.append("Folder has missing/non-matching year tags")
+
+# check all tracks have (correct and matching) album titles
+def check_album_titles(tracks, tag_errors):
 	album_ok = True
 	album_last = None
 	for filename, track in sorted(tracks.items()):
@@ -195,9 +228,28 @@ def check_tags(folder):
 	if not album_ok:
 		tag_errors.append("Folder has missing/non-matching album titles")
 
+def check_tags(folder):
+	items = os.listdir(folder)
 
+	tag_errors = []
 
+	tracks = {}
 
+	for i in items:
+		if os.path.isdir(os.path.join(folder, i)):
+			continue
+
+		if os.path.splitext(i)[-1].lower() == ".mp3":
+			tracks[i] = taglib.File(os.path.join(folder, i))
+	
+	check_album_titles(tracks, tag_errors)
+	check_track_titles(tracks, tag_errors)
+	check_artists(tracks, tag_errors)
+	check_album_artists(tracks, tag_errors)
+	check_years(tracks, tag_errors, folder)
+
+	all_tracks_present = check_track_numbers(tracks, tag_errors)
+	check_track_number_of(tracks, tag_errors, all_tracks_present)
 
 	return tag_errors
 
@@ -246,6 +298,10 @@ parser.add_argument('--delete-disallowed-files', action='store_true',
                    help='Delete superfluous files in album base directories')
 parser.add_argument('--fix-track-number-of', action='store_true',
                    help='Attempt to fix missing track number of tags')
+parser.add_argument('--fix-album-artist', action='store_true',
+                   help='Attempt to fix missing album artist tags')
+parser.add_argument('--fix-year', action='store_true',
+                   help='Attempt to fix missing year tags')
 parser.add_argument('--clean-text-tags', action='store_true',
                    help='Clean up leading/trailing/multiple whitespace')
 
@@ -258,6 +314,8 @@ destination = args.dest
 operation_mode = args.mode
 delete_disallowed_files = args.delete_disallowed_files
 fix_track_number_of = args.fix_track_number_of
+fix_album_artist = args.fix_album_artist
+fix_year = args.fix_year
 clean_text_tags = args.clean_text_tags
 
 if not os.path.isdir(source):
