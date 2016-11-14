@@ -59,10 +59,20 @@ def check_track_numbers(tracks, tag_errors):
 			if track_num > 0:
 				track_numbers.append(track_num)
 		else:
-			tag_errors.append("{0}: track number missing".format(filename))
+			curr_num_missing = True
+			if fix_track_numbers:
+				match = re.search('^(\d{1,2})[ \-_\.]+', filename)
+				if match:
+					write_tag(track, 'TRACKNUMBER', [match.group(1)])
+					track_numbers.append(int(track.tags['TRACKNUMBER'][0]))
+					curr_num_missing = False
+
+			if curr_num_missing:
+				tag_errors.append("{0}: track number missing".format(filename))
 	
 	# check we have a full set of strictly incrementing tracks, starting at 1
 	all_tracks_present = len(track_numbers) != 0 and (track_numbers[0] == 1)
+	track_numbers = sorted(track_numbers)
 	for i in range(0, len(track_numbers)-1):
 		if track_numbers[i] != track_numbers[i+1]-1:
 			all_tracks_present = False
@@ -97,7 +107,68 @@ def check_track_number_of(tracks, tag_errors, all_tracks_present):
 		if int(track_num_split[1]) != track_numbers[-1]:
 			tag_errors.append("{0}: track number-of incorrect: {1} should be {2}".format(filename, track_num_split[1], track_numbers[-1]))
 
-	return all_tracks_present
+# check we have a full set of strictly incrementing tracks, starting at 1
+def check_disc_numbers(tracks, tag_errors, folder):
+
+	disc_numbers_ok = True
+	# check track numbers
+	disc_numbers = []
+	for filename, track in sorted(tracks.items()):
+		if 'DISCNUMBER' in track.tags:
+			disc_num = int(track.tags['DISCNUMBER'][0].split("/")[0])
+			if disc_num > 0:
+				disc_numbers.append(disc_num)
+			else:
+				disc_numbers_ok = False
+		else:
+			disc_numbers_ok = False
+
+	disc_numbers = sorted(set(disc_numbers))
+	
+	disc_number_candidate = None
+	if len(disc_numbers) == 1:
+		disc_number_candidate = disc_numbers[0]
+	# attempt to extract a disc number from the container
+	else:
+		match = re.search('(disc|cd)[ ]?(\d{1})', folder.split(os.path.sep)[-1].lower())
+		if match:
+			disc_number_candidate = match.group(2)
+		else:
+			disc_number_candidate = "1"
+
+
+	if not disc_numbers_ok:
+		if fix_disc_numbers and disc_number_candidate:
+			for filename, track in sorted(tracks.items()):
+				write_tag(track, 'DISCNUMBER', [str(disc_number_candidate)])
+		else:
+			if disc_number_candidate:
+				tag_errors.append("Directory has missing disc numbers (should be {0})".format(disc_number_candidate))
+			else:
+				tag_errors.append("Directory has missing disc numbers")
+
+	return disc_numbers
+
+# check the disc number-of field
+def check_disc_number_of(tracks, tag_errors, disc_numbers):
+		
+	for filename, track in sorted(tracks.items()):
+		# skip this check if there are no track numbers at all
+		if not 'DISCNUMBER' in track.tags:
+			continue
+
+		disc_num_split = track.tags['DISCNUMBER'][0].split("/")
+		if len(disc_num_split) is 1:
+			if len(disc_numbers) is 1:
+				if fix_disc_number_of:
+					new_discnumber = str("{0}/{1}".format(disc_num_split[0], disc_numbers[-1]))
+					write_tag(track, 'DISCNUMBER', [new_discnumber])
+				else:
+					tag_errors.append("{0}: disc number-of missing, should be {1}".format(filename, disc_numbers[-1]))
+			else:
+				tag_errors.append("{0}: disc number-of missing".format(filename))
+			continue
+
 
 # check all tracks have (correct) titles
 def check_track_titles(tracks, tag_errors):
@@ -171,9 +242,9 @@ def check_album_artists(tracks, tag_errors):
 def check_years(tracks, tag_errors, folder):
 
 	# look for a year in the folder name
-	year_folder = re.search('[\^\$(\- ]\d{4}[)\^\$\- ]', folder.split(os.path.sep)[-1])
+	year_folder = re.search('[\^\$(\-\[ ](\d{4})[)\^\$\-\] ]', folder.split(os.path.sep)[-1])
 	if year_folder:
-		year_folder = re.search('\d{4}', year_folder.group(0)).group(0)
+		year_folder = year_folder.group(1)
 
 	year_ok = True
 	year_last = None	
@@ -228,7 +299,29 @@ def check_album_titles(tracks, tag_errors):
 	if not album_ok:
 		tag_errors.append("Folder has missing/non-matching album titles")
 
-def check_tags(folder):
+# check filenames
+def check_filenames(tracks, tag_errors, folder):
+	for filename, track in sorted(tracks.items()):
+		if 'TRACKNUMBER' not in track.tags or 'TITLE' not in track.tags or 'ARTIST' not in track.tags:
+			tag_errors.append("Impossible to validate filename {0}".format(filename))
+
+		correct_filename = "{0} - {1}.mp3".format(track.tags['TRACKNUMBER'][0].split("/")[0].zfill(2), clean_text(track.tags['TITLE'][0]))
+		if filename != correct_filename:
+			if fix_filenames:
+				track.close()
+				del tracks[filename]
+				os.rename(os.path.join(folder, filename), os.path.join(folder, correct_filename))
+				track = taglib.File(os.path.join(folder, correct_filename))
+				tracks[filename] = track
+			else:
+				tag_errors.append("Invalid filename {0}, should be {1}".format(filename, correct_filename))
+
+def check_bitrates(tracks, tag_errors):
+	for filename, track in sorted(tracks.items()):
+		print(track.bitrate)
+		exit()
+
+def check_tags(folder, subfolder_mode=False):
 	items = os.listdir(folder)
 
 	tag_errors = []
@@ -240,6 +333,8 @@ def check_tags(folder):
 			continue
 
 		if os.path.splitext(i)[-1].lower() == ".mp3":
+			tmp = os.path.join(folder, i)
+			print("opening {0}".format(tmp))
 			tracks[i] = taglib.File(os.path.join(folder, i))
 	
 	check_album_titles(tracks, tag_errors)
@@ -250,6 +345,14 @@ def check_tags(folder):
 
 	all_tracks_present = check_track_numbers(tracks, tag_errors)
 	check_track_number_of(tracks, tag_errors, all_tracks_present)
+
+	disc_numbers = check_disc_numbers(tracks, tag_errors, folder)
+
+	if not subfolder_mode:
+		check_disc_number_of(tracks, tag_errors, disc_numbers)
+
+	check_filenames(tracks, tag_errors, folder)
+	#check_bitrates(tracks, tag_errors)
 
 	return tag_errors
 
@@ -278,6 +381,13 @@ def string_background(string, color):
 #colorama
 colorama_init(autoreset=True)
 
+try:
+	print(u"\u2603 Scraper running...")
+except:
+	print("""Unicode error - run the program again.""")
+	os.system("chcp 65001")
+	exit()
+	
 #argparse
 parser = argparse.ArgumentParser(description='Validate a music collection.', prefix_chars='--',
 				formatter_class=argparse.RawDescriptionHelpFormatter,  epilog='''\
@@ -296,14 +406,23 @@ parser.add_argument('--dest', metavar='destination', type=str,
                    help='Leave original files untouched, create fixed versions in this directory')
 parser.add_argument('--delete-disallowed-files', action='store_true',
                    help='Delete superfluous files in album base directories')
+parser.add_argument('--fix-track-numbers', action='store_true',
+                   help='Attempt to fix missing track numbers')
 parser.add_argument('--fix-track-number-of', action='store_true',
                    help='Attempt to fix missing track number of tags')
+parser.add_argument('--fix-disc-numbers', action='store_true',
+                   help='Attempt to fix missing disc numbers')
+parser.add_argument('--fix-disc-number-of', action='store_true',
+                   help='Attempt to fix missing disc number-of tags')
 parser.add_argument('--fix-album-artist', action='store_true',
                    help='Attempt to fix missing album artist tags')
 parser.add_argument('--fix-year', action='store_true',
                    help='Attempt to fix missing year tags')
 parser.add_argument('--clean-text-tags', action='store_true',
                    help='Clean up leading/trailing/multiple whitespace')
+parser.add_argument('--fix-filenames', action='store_true',
+                   help='Validate filenames')
+
 
 
 
@@ -313,10 +432,14 @@ source = args.source
 destination = args.dest
 operation_mode = args.mode
 delete_disallowed_files = args.delete_disallowed_files
+fix_track_numbers = args.fix_track_numbers
 fix_track_number_of = args.fix_track_number_of
 fix_album_artist = args.fix_album_artist
 fix_year = args.fix_year
+fix_disc_numbers = args.fix_disc_numbers
+fix_disc_number_of = args.fix_disc_number_of
 clean_text_tags = args.clean_text_tags
+fix_filenames = args.fix_filenames
 
 if not os.path.isdir(source):
 	print("Source folder {0} does not exist".format(source))
@@ -332,6 +455,8 @@ print("Scanning {0} subfolders...".format(len(folders)))
 
 last_failed = False
 
+total_failure_reasons = 0
+
 for curr in folders:
 
 	full_path = os.path.join(source, curr)
@@ -341,6 +466,7 @@ for curr in folders:
 		continue
 
 	failure_reasons = validate_folder(full_path)
+	total_failure_reasons += len(failure_reasons)
 
 	if len(failure_reasons) is not 0:
 
@@ -356,9 +482,10 @@ for curr in folders:
 
 
 	else:
-
 		print("{0} {1}".format(string_colour("[PASS]", Fore.GREEN), curr))
 		last_failed = False
+
+print("Total tag errors: {0}".format(total_failure_reasons))
 
 
 # discnum_of
