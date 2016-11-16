@@ -4,6 +4,56 @@ import textwrap
 from colorama import Fore, Back, Style, init as colorama_init
 import taglib
 import re
+import bitstring
+
+class Mp3Info():
+	method = None # CBR/VBR/LAME
+	bitrate = None
+	xing_vbr_v = None
+	xing_vbr_q = None
+	lame_version = None
+	lame_tag_revision = None
+	lame_vbr_method = None
+	lame_nspsytune = None
+	lame_nssafejoint = None
+	lame_nogap_next = None
+	lame_nogap_previous = None
+
+	def __init__(self, path):
+		stream = bitstring.ConstBitStream(filename=path)
+
+		# look for Xing
+		Xing = stream.find("0x58696E67", bytealigned=True)
+		xing_vbr_quality = None
+
+		if Xing:
+			method = "VBR"
+			stream.bytepos += 4
+			xing_flags = stream.read("uint:32")
+			if xing_flags & 1:					# skip frames field
+				stream.bytepos += 4
+			if xing_flags & 2:					# skip bytes field
+				stream.bytepos += 4
+			if xing_flags & 4:					# skip TOC
+				stream.bytepos += 100
+			if xing_flags & 8:
+				xing_vbr_quality = stream.read("uint:32")
+				self.xing_vbr_v = 10 - int(xing_vbr_quality/10)
+				self.xing_vbr_q = xing_vbr_quality % 10
+
+			lame_version = stream.read("bytes:9")
+			if lame_version[0:4] == b"LAME":
+				self.lame_version = lame_version[4:].decode().strip()
+				self.lame_tag_revision = stream.read("uint:4")
+				self.lame_vbr_method = stream.read("uint:4")
+				stream.bytepos += 9
+				self.lame_nspsytune = stream.read("bool")
+				self.lame_nssafejoint = stream.read("bool")
+				self.lame_nogap_next = stream.read("bool")
+				self.lame_nogap_previous = stream.read("bool")
+
+
+
 
 allowed_extensions = [".mp3", ".flac", ".jpg", ".jpeg", ".log"]
 
@@ -319,6 +369,7 @@ def check_filenames(tracks, tag_errors, folder):
 def check_bitrates(tracks, tag_errors):
 	for filename, track in sorted(tracks.items()):
 		print(track.bitrate)
+		print(track.cFile)
 		exit()
 
 def check_tags(folder, subfolder_mode=False):
@@ -334,7 +385,9 @@ def check_tags(folder, subfolder_mode=False):
 
 		if os.path.splitext(i)[-1].lower() == ".mp3":
 			tmp = os.path.join(folder, i)
-			print("opening {0}".format(tmp))
+			#print("opening {0}".format(tmp))
+			info = Mp3Info(os.path.join(folder, i))
+			print("{0}, {1}".format(info.xing_vbr_q, info.lame_version))
 			tracks[i] = taglib.File(os.path.join(folder, i))
 	
 	check_album_titles(tracks, tag_errors)
@@ -492,3 +545,5 @@ print("Total tag errors: {0}".format(total_failure_reasons))
 # encoding
 # subfolder CD1/2
 # split into functions
+# implement musicCRC?
+# test for v2
