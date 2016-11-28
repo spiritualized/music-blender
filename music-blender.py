@@ -147,7 +147,7 @@ class MusicFile():
 
 	def clean_multiple_tags(self, tag):
 
-		if len(self.metadata.tags[tag]) == 1:
+		if len(self.metadata.tags[tag]) in [0,1]:
 			return
 
 		new_tag_val = []
@@ -194,6 +194,16 @@ allowed_extensions = [".mp3", ".flac", ".jpg", ".jpeg", ".log"]
 def clean_text(text):
 	return re.sub(' +', ' ', text.strip())
 
+def nt_path_fix(path):
+	if os.name != "nt":
+		return path
+
+	mapping = {	'\\':'_', '/':'_', ':':'：', '*':'', '?':'_', '"':'\'', '<':'[', '>':']', '|':'_'}
+	for i in mapping:
+		path = path.replace(i, mapping[i])
+
+	return path
+
 # return true if folder contains any subfolders
 def check_subfolders(folder):
 	items = os.listdir(folder)
@@ -232,9 +242,12 @@ def check_track_numbers(tracks, tag_errors):
 	track_numbers = []
 	for track in tracks:
 		if track.get_tag('TRACKNUMBER'):
-			track_num = int(track.get_tag('TRACKNUMBER').split("/")[0])
-			if track_num > 0:
-				track_numbers.append(track_num)
+			try:
+				track_num = int(track.get_tag('TRACKNUMBER').split("/")[0])
+				if track_num > 0:
+					track_numbers.append(track_num)
+			except ValueError:
+				tag_errors.append("Invalid track number, examine manually: {0}".format(track.get_filename()))
 		else:
 			curr_num_missing = True
 			if fix_track_numbers:
@@ -331,7 +344,7 @@ def check_disc_numbers(tracks, tag_errors, folder):
 
 # check the disc number-of field
 def check_disc_number_of(tracks, tag_errors, disc_numbers):
-		
+
 	for track in tracks:
 		# skip this check if there are no track numbers at all
 		if not track.get_tag('DISCNUMBER'):
@@ -339,7 +352,7 @@ def check_disc_number_of(tracks, tag_errors, disc_numbers):
 
 		disc_num_split = track.get_tag('DISCNUMBER').split("/")
 		if len(disc_num_split) is 1:
-			if len(disc_numbers) is 1:
+			if len(disc_numbers) != 0:
 				if fix_disc_number_of:
 					new_discnumber = str("{0}/{1}".format(disc_num_split[0], disc_numbers[-1]))
 					track.write_tag('DISCNUMBER', [new_discnumber])
@@ -461,24 +474,46 @@ def check_invalid_tags(tracks, tag_errors):
 
 # check filenames
 def check_filenames(tracks, tag_errors, folder):
+
+	out_tracks = []
+
 	for track in tracks:
 		if not track.get_tag('TRACKNUMBER') or not track.get_tag('TITLE') or not track.get_tag('ARTIST'):
 			tag_errors.append("Impossible to validate filename {0}".format(track.get_filename()))
 			return sorted(tracks)
 
-		correct_filename = "{0} - {1}.mp3".format(track.get_tag('TRACKNUMBER').split("/")[0].zfill(2), track.get_tag('TITLE'))
-		if os.name == "nt":
-			correct_filename = correct_filename.replace("?", "_")
+		# if a multi disc album, prepend the disc number to the track number in the filename
+		if track.get_tag('DISCNUMBER').split("/")[1] != "1":
+			disc_num = track.get_tag('DISCNUMBER').split("/")[0]
+		else:
+			disc_num = ""
+
+
+		correct_filename = "{0}{1} - {2}.mp3".format(disc_num, track.get_tag('TRACKNUMBER').split("/")[0].zfill(2), track.get_tag('TITLE'))
+		correct_filename = nt_path_fix(correct_filename)
+
+		new_track = track
+		
 		if track.get_filename() != correct_filename:
 			if fix_filenames:
 				track.close()
-				tracks.remove(track)
-				os.rename(track.path, os.path.join(os.path.dirname(track.path), correct_filename))
-				track = MusicFile(os.path.join(folder, correct_filename))
-				tracks.append(track)
+				try:
+					new_path = os.path.join(os.path.dirname(track.path), correct_filename)
+					if os.name == "nt" and len(new_path) > 260:
+						fn, ext = os.path.splitext(new_path)
+						new_path = new_path[0:259-len(ext)] + ext
+
+					os.rename(track.path, new_path)
+					new_track = MusicFile(new_path)
+				except FileExistsError:
+					tag_errors.append("Duplicate filename: {0}".format(correct_filename))
+					continue
 			else:
 				tag_errors.append("Invalid filename {0}, should be {1}".format(track.get_filename(), correct_filename))
-	return sorted(tracks)
+
+		out_tracks.append(new_track)
+
+	return sorted(out_tracks)
 
 def check_bitrates(tracks, tag_errors):
 
@@ -489,7 +524,7 @@ def check_bitrates(tracks, tag_errors):
 		curr_track_bitrate = None
 
 		if track.mp3info.lame_version:
-			
+
 			if track.mp3info.lame_vbr_method in [1,8]:
 				curr_track_bitrate = "CBR{0}".format(track.metadata.bitrate)
 
@@ -499,14 +534,17 @@ def check_bitrates(tracks, tag_errors):
 				elif track.mp3info.xing_vbr_v == 0:
 					curr_track_bitrate = "APE"
 				else:
-					raise ValueError("I don't know what kind of --vbr-old this is ({0})".format(track.mp3info.xing_vbr_v))
+					curr_track_bitrate = "vbr-old V{0}".format(track.mp3info.xing_vbr_v)
+					#raise ValueError("I don't know what kind of --vbr-old this is ({0})".format(track.mp3info.xing_vbr_v))
 
 			elif track.mp3info.lame_vbr_method in [4,5]:
 				curr_track_bitrate = "V{0}".format(track.mp3info.xing_vbr_v)
+			elif track.mp3info.lame_vbr_method in [2,9]:
+				curr_track_bitrate = "ABR"
+				vbr_accumulator += track.metadata.bitrate
 			else:
 				raise ValueError("I don't know what kind of lame_vbr_method this is ({0})".format(track.mp3info.lame_vbr_method))
-		#print("method {0}, vbr-v {1}, vbr-q {2}".format(track.mp3info.lame_vbr_method, track.mp3info.xing_vbr_v, track.mp3info.xing_vbr_q))
-
+		
 		elif track.mp3info.method == "CBR":
 			curr_track_bitrate = "CBR{0}".format(track.metadata.bitrate)
 
@@ -520,7 +558,7 @@ def check_bitrates(tracks, tag_errors):
 		elif overall_bitrate != curr_track_bitrate:
 			return "~"
 
-	if overall_bitrate == "VBR":
+	if overall_bitrate in ["VBR", "ABR"]:
 		overall_bitrate = "VBR{0}".format(int(vbr_accumulator/len(tracks)))
 
 	return overall_bitrate
@@ -535,6 +573,8 @@ def check_folder_name(tracks, tag_errors, folder, bitrate):
 	year = tracks[0].metadata.tags['DATE'][0].split("-")[0]
 	album = tracks[0].metadata.tags['ALBUM'][0]
 	correct_folder_name = "{0} - {1} - {2} [{3}]".format(album_artist, year, album, bitrate)
+	
+	correct_folder_name = nt_path_fix(correct_folder_name)
 	
 	if current_folder_name != correct_folder_name:
 		if fix_foldernames:
@@ -553,13 +593,13 @@ def check_folder_name(tracks, tag_errors, folder, bitrate):
 
 
 
-def check_tags(folder, subfolder_mode=False):
+def check_tags(folder, tag_errors, subfolder_mode=False):
 	items = os.listdir(folder)
 
-	tag_errors = []
+	#tag_errors = []
 
 	tracks = []
-	print(folder)
+	#print(folder)
 
 	for i in items:
 		if os.path.isdir(os.path.join(folder, i)):
@@ -600,6 +640,7 @@ def check_tags(folder, subfolder_mode=False):
 
 	# move to the output folder if required
 	if len(tag_errors) == 0 and move_to and not os.path.exists(os.path.join(move_to, correct_folder_name)):
+		
 		for track in tracks:
 				track.close()
 		os.rename(folder, os.path.join(move_to, correct_folder_name))
@@ -618,9 +659,7 @@ def validate_folder(folder):
 	for file in disallowed_files:
 		failure_reasons.append("Disallowed file: {0}".format(file))
 
-	tag_errors = check_tags(folder)
-	for error in tag_errors:
-		failure_reasons.append("Tag error: {0}".format(error))
+	check_tags(folder, failure_reasons)
 
 	return failure_reasons
 
