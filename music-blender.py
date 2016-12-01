@@ -1,12 +1,9 @@
 import argparse
 import os
-import textwrap
 from colorama import Fore, Back, Style, init as colorama_init
 import taglib
 import re, math
 import bitstring
-
-file_search_limit = 8192
 
 class Mp3Info():
 	method = None # CBR/VBR/LAME
@@ -189,7 +186,7 @@ class MusicFile():
 	def __gt__(self, other):
 		return self.get_filename() > other.get_filename()
 
-allowed_extensions = [".mp3", ".flac", ".jpg", ".jpeg", ".log"]
+allowed_extensions = [".mp3", ".flac", ".jpg", ".jpeg", ".log", ".mix"]
 
 def clean_text(text):
 	return re.sub(' +', ' ', text.strip())
@@ -223,7 +220,8 @@ def check_disallowed_files(folder):
 		# skip folders
 		if os.path.isdir(os.path.join(folder, i)):
 			continue
-
+		if i == ".mix":
+			continue
 		ext = os.path.splitext(i)[-1].lower()
 		if ext not in allowed_extensions:
 
@@ -239,13 +237,17 @@ def check_disallowed_files(folder):
 def check_track_numbers(tracks, tag_errors):
 
 	# check track numbers
-	track_numbers = []
+	track_numbers = {}
 	for track in tracks:
 		if track.get_tag('TRACKNUMBER'):
 			try:
+				disc_num = int(track.get_tag('DISCNUMBER').split("/")[0]) or 1
 				track_num = int(track.get_tag('TRACKNUMBER').split("/")[0])
+
+				if not track_numbers.get(disc_num):
+					track_numbers[disc_num] = []
 				if track_num > 0:
-					track_numbers.append(track_num)
+					track_numbers[disc_num].append(track_num)
 			except ValueError:
 				tag_errors.append("Invalid track number, examine manually: {0}".format(track.get_filename()))
 		else:
@@ -259,13 +261,18 @@ def check_track_numbers(tracks, tag_errors):
 
 			if curr_num_missing:
 				tag_errors.append("{0}: track number missing".format(track.get_filename()))
-	
+
 	# check we have a full set of strictly incrementing tracks, starting at 1
-	all_tracks_present = len(track_numbers) != 0 and (track_numbers[0] == 1)
-	track_numbers = sorted(track_numbers)
-	for i in range(0, len(track_numbers)-1):
-		if track_numbers[i] != track_numbers[i+1]-1:
+	all_tracks_present = len(track_numbers) != 0
+
+	for disc in track_numbers:
+		if track_numbers[disc][0] != 1:
 			all_tracks_present = False
+
+		curr_track_numbers = sorted(track_numbers[disc])
+		for i in range(0, len(curr_track_numbers)-1):
+			if curr_track_numbers[i] != curr_track_numbers[i+1]-1:
+				all_tracks_present = False
 
 	if not all_tracks_present:
 		flattened_track_nums = ",".join(str(i) for i in track_numbers)
@@ -483,7 +490,7 @@ def check_filenames(tracks, tag_errors, folder):
 			return sorted(tracks)
 
 		# if a multi disc album, prepend the disc number to the track number in the filename
-		if track.get_tag('DISCNUMBER').split("/")[1] != "1":
+		if track.get_tag('DISCNUMBER') and track.get_tag('DISCNUMBER').split("/")[1] != "1":
 			disc_num = track.get_tag('DISCNUMBER').split("/")[0]
 		else:
 			disc_num = ""
@@ -572,7 +579,20 @@ def check_folder_name(tracks, tag_errors, folder, bitrate):
 	album_artist = tracks[0].get_flattened('ALBUMARTIST')
 	year = tracks[0].metadata.tags['DATE'][0].split("-")[0]
 	album = tracks[0].metadata.tags['ALBUM'][0]
-	correct_folder_name = "{0} - {1} - {2} [{3}]".format(album_artist, year, album, bitrate)
+
+	artists = []
+	for track in tracks:
+		artists.append(track.get_tag('ARTIST'))
+	artists = list(set(artists))
+	#print(artists)
+
+	# VA album
+	if len(artists) > 4 or os.path.exists(os.path.join(folder, ".mix")):
+		correct_folder_name = "VA - {0} - {1} - {2} [{3}]".format(album, year, album_artist, bitrate)
+
+	# standard naming
+	else:
+		correct_folder_name = "{0} - {1} - {2} [{3}]".format(album_artist, year, album, bitrate)
 	
 	correct_folder_name = nt_path_fix(correct_folder_name)
 	
@@ -581,10 +601,14 @@ def check_folder_name(tracks, tag_errors, folder, bitrate):
 			for track in tracks:
 				track.close()
 
-			if not os.path.exists(os.path.join(current_folder_parent, correct_folder_name)):
-				os.rename(os.path.join(current_folder_parent, current_folder_name), os.path.join(current_folder_parent, correct_folder_name))
+			path_curr = os.path.join(current_folder_parent, current_folder_name)
+			path_correct = os.path.join(current_folder_parent, correct_folder_name)
+
+			# if the path doesn't exist, or we are renaming in a case-insensitive OS
+			if not os.path.exists(path_correct) or path_curr.lower() == path_correct.lower():
+				os.rename(path_curr, path_correct)
 			else:
-				tag_errors.append("Destination folder {0} already exists".format(os.path.join(current_folder_parent, correct_folder_name)))
+				tag_errors.append("Destination folder {0} already exists".format(path_correct))
 
 		else:
 			tag_errors.append("Folder name should be {0}, not {1}".format(correct_folder_name, current_folder_name))
@@ -608,6 +632,12 @@ def check_tags(folder, tag_errors, subfolder_mode=False):
 		if os.path.splitext(i)[-1].lower() == ".mp3":
 			tmp = os.path.join(folder, i)
 			tracks.append(MusicFile(os.path.join(folder, i)))
+
+	# disc numbers before track numbers
+	disc_numbers = check_disc_numbers(tracks, tag_errors, folder)
+
+	if not subfolder_mode:
+		check_disc_number_of(tracks, tag_errors, disc_numbers)
 			
 	check_album_titles(tracks, tag_errors)
 	check_track_titles(tracks, tag_errors)
@@ -619,10 +649,7 @@ def check_tags(folder, tag_errors, subfolder_mode=False):
 	all_tracks_present = check_track_numbers(tracks, tag_errors)
 	check_track_number_of(tracks, tag_errors, all_tracks_present)
 
-	disc_numbers = check_disc_numbers(tracks, tag_errors, folder)
 
-	if not subfolder_mode:
-		check_disc_number_of(tracks, tag_errors, disc_numbers)
 
 	tracks = check_filenames(tracks, tag_errors, folder)
 	bitrate = check_bitrates(tracks, tag_errors)
@@ -640,7 +667,7 @@ def check_tags(folder, tag_errors, subfolder_mode=False):
 
 	# move to the output folder if required
 	if len(tag_errors) == 0 and move_to and not os.path.exists(os.path.join(move_to, correct_folder_name)):
-		
+
 		for track in tracks:
 				track.close()
 		os.rename(folder, os.path.join(move_to, correct_folder_name))
@@ -774,4 +801,6 @@ print("Total tag errors: {0}".format(total_failure_reasons))
 
 
 # subfolder CD1/2
+# tracknumber check on multi CD
 # implement musicCRC?
+# 8 bit people
