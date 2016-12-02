@@ -264,8 +264,12 @@ def check_track_numbers(tracks, tag_errors):
 
 	# check we have a full set of strictly incrementing tracks, starting at 1
 	all_tracks_present = len(track_numbers) != 0
-
+	print(track_numbers)
 	for disc in track_numbers:
+		if len(track_numbers[disc]) == 0:
+			all_tracks_present = False
+			break
+
 		if track_numbers[disc][0] != 1:
 			all_tracks_present = False
 
