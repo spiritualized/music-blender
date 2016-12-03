@@ -42,17 +42,22 @@ class Mp3Info():
 			# LAME versions < 3.90 do not contain encoder info, and will not be picked up by this. Treat as VBR
 			lame_version = stream.read("bytes:9")
 			if lame_version[0:4] == b"LAME":
-				self.lame_version = lame_version[4:].decode().strip()
-				self.lame_tag_revision = stream.read("uint:4")
-				self.lame_vbr_method = stream.read("uint:4")
-				stream.bytepos += 9
-				self.lame_nspsytune = stream.read("bool")
-				self.lame_nssafejoint = stream.read("bool")
-				self.lame_nogap_next = stream.read("bool")
-				self.lame_nogap_previous = stream.read("bool")
 
-				if self.lame_version[-1] == ".":
-					self.lame_version = self.lame_version[:-1]
+				# allow for broken/hacked LAME versions, treat as regular VBR
+				try:
+					self.lame_version = lame_version[4:].decode().strip()
+					self.lame_tag_revision = stream.read("uint:4")
+					self.lame_vbr_method = stream.read("uint:4")
+					stream.bytepos += 9
+					self.lame_nspsytune = stream.read("bool")
+					self.lame_nssafejoint = stream.read("bool")
+					self.lame_nogap_next = stream.read("bool")
+					self.lame_nogap_previous = stream.read("bool")
+
+					if self.lame_version[-1] == ".":
+						self.lame_version = self.lame_version[:-1]
+				except:
+					self.method = "VBR"
 
 			return
 
@@ -76,6 +81,7 @@ class Mp3Info():
 class MusicFile():
 	path = None
 	metadata = None
+	bitrate = None
 	mp3info = None
 
 	def get_filename(self):
@@ -85,6 +91,7 @@ class MusicFile():
 		self.path = path
 		self.mp3info =  Mp3Info(path)
 		self.metadata = taglib.File(path)
+		self.bitrate = self.metadata.bitrate
 		self.initial_clean()
 
 	# checks for whitespace in tags and autofixes
@@ -239,32 +246,36 @@ def check_track_numbers(tracks, tag_errors):
 	# check track numbers
 	track_numbers = {}
 	for track in tracks:
+		track_num = None
+
+		disc_num = int(track.get_tag('DISCNUMBER').split("/")[0]) or 1
+		if not track_numbers.get(disc_num):
+				track_numbers[disc_num] = []
+
 		if track.get_tag('TRACKNUMBER'):
 			try:
-				disc_num = int(track.get_tag('DISCNUMBER').split("/")[0]) or 1
 				track_num = int(track.get_tag('TRACKNUMBER').split("/")[0])
 
-				if not track_numbers.get(disc_num):
-					track_numbers[disc_num] = []
 				if track_num > 0:
 					track_numbers[disc_num].append(track_num)
 			except ValueError:
 				tag_errors.append("Invalid track number, examine manually: {0}".format(track.get_filename()))
-		else:
+		if not track_num:
 			curr_num_missing = True
 			if fix_track_numbers:
 				match = re.search('(\d{1,2})[ \-_\.]+', track.get_filename())
 				if match:
 					track.write_tag('TRACKNUMBER', [match.group(1)])
-					track_numbers.append(int(track.get_tag('TRACKNUMBER')))
+					track_numbers[disc_num].append(int(track.get_tag('TRACKNUMBER')))
 					curr_num_missing = False
 
 			if curr_num_missing:
 				tag_errors.append("{0}: track number missing".format(track.get_filename()))
 
+
 	# check we have a full set of strictly incrementing tracks, starting at 1
 	all_tracks_present = len(track_numbers) != 0
-	print(track_numbers)
+	
 	for disc in track_numbers:
 		if len(track_numbers[disc]) == 0:
 			all_tracks_present = False
@@ -537,13 +548,15 @@ def check_bitrates(tracks, tag_errors):
 		if track.mp3info.lame_version:
 
 			if track.mp3info.lame_vbr_method in [1,8]:
-				curr_track_bitrate = "CBR{0}".format(track.metadata.bitrate)
+				curr_track_bitrate = "CBR{0}".format(track.bitrate)
 
 			elif track.mp3info.lame_vbr_method == 3:
-				if track.mp3info.xing_vbr_v == 2:
-					curr_track_bitrate = "APS"
-				elif track.mp3info.xing_vbr_v == 0:
+				if track.mp3info.xing_vbr_v == 0:
 					curr_track_bitrate = "APE"
+				elif track.mp3info.xing_vbr_v == 1:
+					curr_track_bitrate = "APM"
+				elif track.mp3info.xing_vbr_v == 2:
+					curr_track_bitrate = "APS"
 				else:
 					curr_track_bitrate = "vbr-old V{0}".format(track.mp3info.xing_vbr_v)
 					#raise ValueError("I don't know what kind of --vbr-old this is ({0})".format(track.mp3info.xing_vbr_v))
@@ -552,16 +565,17 @@ def check_bitrates(tracks, tag_errors):
 				curr_track_bitrate = "V{0}".format(track.mp3info.xing_vbr_v)
 			elif track.mp3info.lame_vbr_method in [2,9]:
 				curr_track_bitrate = "ABR"
-				vbr_accumulator += track.metadata.bitrate
+				vbr_accumulator += track.bitrate
 			else:
-				raise ValueError("I don't know what kind of lame_vbr_method this is ({0})".format(track.mp3info.lame_vbr_method))
+				curr_track_bitrate = "lame_vbr_method {0}".format(track.mp3info.lame_vbr_method)
+				#raise ValueError("I don't know what kind of lame_vbr_method this is ({0})".format(track.mp3info.lame_vbr_method))
 		
 		elif track.mp3info.method == "CBR":
-			curr_track_bitrate = "CBR{0}".format(track.metadata.bitrate)
+			curr_track_bitrate = "CBR{0}".format(track.bitrate)
 
 		elif track.mp3info.method == "VBR":
 			curr_track_bitrate = "VBR"
-			vbr_accumulator += track.metadata.bitrate
+			vbr_accumulator += track.bitrate
 
 
 		if overall_bitrate is None:
@@ -634,8 +648,13 @@ def check_tags(folder, tag_errors, subfolder_mode=False):
 			continue
 
 		if os.path.splitext(i)[-1].lower() == ".mp3":
-			tmp = os.path.join(folder, i)
-			tracks.append(MusicFile(os.path.join(folder, i)))
+			path = os.path.join(folder, i)
+
+			# check for empty files
+			if not os.path.getsize(path):
+				continue
+			
+			tracks.append(MusicFile(path))
 
 	# disc numbers before track numbers
 	disc_numbers = check_disc_numbers(tracks, tag_errors, folder)
