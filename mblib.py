@@ -3,6 +3,7 @@ import re, math
 import bitstring
 
 import taglib
+import musicbrainzngs
 import json
 
 class blender():
@@ -36,6 +37,11 @@ class blender():
 	album_artist_ok = False
 	album_title_ok = False
 	filenames_ok = False
+	musicbrainz_ok = False
+
+
+	def __init__(self):
+		musicbrainzngs.set_useragent("music-blender", "0.1", "")
 
 
 	def set_move_to(self, path):
@@ -58,6 +64,7 @@ class blender():
 		self.album_artist_ok = False
 		self.album_title_ok = False
 		self.filenames_ok = False
+		self.musicbrainz_ok = False
 
 		if not os.path.isdir(path):
 			print("Folder {0} does not exist".format(source))
@@ -115,6 +122,7 @@ class blender():
 		self.check_artists()
 		self.check_album_artists()
 		self.check_years()
+		self.musicbrainz_verify()
 
 		all_tracks_present = self.check_track_numbers()
 		self.check_track_number_of(all_tracks_present)
@@ -594,6 +602,39 @@ class blender():
 				self.tag_errors.append("Folder name should be {0}, not {1}".format(correct_folder_name, current_folder_name))
 
 		return correct_folder_name
+
+	def musicbrainz_verify(self):
+		return
+		if not self.album_artist_ok or not self.album_title_ok:
+			self.tag_errors.append("Album arist and title required for MusicBrainz validation")
+			return
+
+		artist = self.tracks[0].get_flattened('ALBUMARTIST')
+		album = self.tracks[0].get_tag('ALBUM')
+		date = self.tracks[0].get_tag('DATE')
+
+		results = musicbrainzngs.search_releases(album, artist=artist, limit=10)
+
+		release = results['release-list'][0]
+		curr_release = results['release-list']
+		for release in results['release-list']:
+
+			if release['ext:score'] != "100":
+				continue
+
+			if len(release['artist-credit'][0]) > 1:
+				continue
+
+			print (json.dumps(release, sort_keys=True, indent=4))
+			mb_album = release['title']
+			mb_date = release['date']
+			mb_artist = release['artist-credit'][0]['artist']['name']
+
+			print("{0} -> {1}".format(artist, mb_artist))
+			print("{0} -> {1}".format(album, mb_album))
+			print("{0} -> {1}".format(date, mb_date))
+
+
 
 
 
